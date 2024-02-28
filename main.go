@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"syscall"
 	"unsafe"
@@ -28,8 +29,14 @@ func (p *Process) CloseHandle() bool {
     err := syscall.CloseHandle(p.handle)
     return err == nil
 }
-func (p *Process) Kill() {
-	// Todo
+func (p *Process) Kill() bool {
+	process, err := os.FindProcess(int(p.processID));
+	if (err != nil) {
+		fmt.Printf("err: %v\n", err)
+		return false;
+	}
+	errKilled := process.Kill();
+	return errKilled == nil;
 }
 func (p *Process) QueryString(query string /* ostali parametri od VirthualQueryEx */) uintptr {
 	// Todo
@@ -48,18 +55,45 @@ func (p *Process) GetMainExecutable() string {
 	data := syscall.UTF16ToString(buffer);
 	return data;
 }
-func (p *Process) WriteMemory(handle syscall.Handle, baseAddress uint32, dataBuffer []byte, bytesToWrite uint32, bytesWritten *uint32) bool {
+func (p *Process) LoadLibrary(dllPath string) bool {
+	// DLL Injekcija u Proces.
+	if (!strings.Contains(dllPath, ".dll")) {
+		return false;
+	}
+	kernel32 := syscall.NewLazyDLL("kernel32.dll");
+	dll, _ := syscall.LoadLibrary("kernel32.dll");
+	memAlloc := kernel32.NewProc("VirtualAllocEx");
+	regionPointer, _, successful := memAlloc.Call(uintptr(p.handle), uintptr(unsafe.Pointer(nil)), uintptr(len(dllPath)+1), windows.MEM_COMMIT | windows.MEM_RESERVE, syscall.PAGE_EXECUTE_READWRITE);
+	// Prvo alociramo memoriju za DLL.
+	if (successful != nil) {
+		fmt.Println("success: ", successful);
+	}
+	var bytesWritten uint32
+	success := p.WriteMemory(uintptr(regionPointer), []byte(dllPath), uint32(len(dllPath)+1), &bytesWritten);
+	// Pisemo memoriju u alociran space.
+	if (!success) {
+		return false
+	}
+	fmt.Printf("bytesWritten: %v\n", bytesWritten)
+	loadLibraryA, _ := syscall.GetProcAddress(dll, "LoadLibraryA");
+	createRemoteThread := kernel32.NewProc("CreateRemoteThread");
+	// Pravimo Remote Thread u procesu.
+	tHandle, _, _ := createRemoteThread.Call(uintptr(p.handle), uintptr(unsafe.Pointer(nil)), uintptr(0), uintptr(loadLibraryA), uintptr(regionPointer), uintptr(0), uintptr(unsafe.Pointer(nil)));
+	syscall.CloseHandle(syscall.Handle(tHandle));
+	fmt.Printf("tHandle: %v\n")
+	// Pravimo remote thread unutar procesa i uzimamo adresu memorijske strane u kojem taj thread zivi.
+	
+	return true
+}
+func (p *Process) WriteMemory(baseAddress uintptr, dataBuffer []byte, bytesToWrite uint32, bytesWritten *uint32) bool {
 	// Pise memoriju iz dataBuffera u Proces.
 	memory := syscall.NewLazyDLL("kernel32.dll");
 	write := memory.NewProc("WriteProcessMemory");
-	syscall.Close(p.handle);
 
-	_, _, err := write.Call(uintptr(handle), uintptr(baseAddress), uintptr(unsafe.Pointer(&dataBuffer[0])), uintptr(bytesToWrite), uintptr(unsafe.Pointer(bytesWritten)));
-	if (err != nil) {
-		fmt.Println(err);
-		return false
-	}
-	return true
+
+	res, _, err := write.Call(uintptr(p.handle), baseAddress, uintptr(unsafe.Pointer(&dataBuffer[0])), uintptr(bytesToWrite), uintptr(unsafe.Pointer(bytesWritten)));
+	fmt.Printf("err: %v\n", err)
+	return res != 0;
 }
 func (p *Process) ReadMemory(handle syscall.Handle, baseAddress uint32, dataBuffer []byte, bytesToRead uint32, bytesRead *uint32) bool {
 	// Cita memoriju u dataBuffer.
@@ -72,7 +106,7 @@ func (p *Process) ReadMemory(handle syscall.Handle, baseAddress uint32, dataBuff
 	}
 	return true
 }
-func getMod(processHandle windows.Handle, moduleHandle windows.Handle, moduleInfo *windows.ModuleInfo) error {
+func GetModuleInfo(processHandle windows.Handle, moduleHandle windows.Handle, moduleInfo *windows.ModuleInfo) error {
     err := windows.GetModuleInformation(processHandle, moduleHandle, moduleInfo, uint32(unsafe.Sizeof(*moduleInfo)))
     if err != nil {
         return err
@@ -86,7 +120,7 @@ func (p *Process) GetBaseAddress() uintptr {
 	var modules [1024]syscall.Handle
 	modes, err := p.EnumerateModules(modules[:]) // modes = [x]syscall.Handle
 	if (err != nil) {
-		fmt.Println("e");
+		fmt.Println("error! - ", err);
 		return 0;
 	}
 	// Ako smo uzeli module, loadujemo GetModuleFileNameExW funkciju koja vraca full path ka modulu. Moduli moraju biti loadovani kada se poziva ova funkcija.
@@ -96,16 +130,15 @@ func (p *Process) GetBaseAddress() uintptr {
 	 moduleInfo := windows.ModuleInfo {}
 	for i := 0; i < len(modes); i++ {
 		// Cilj je pronaci glavni modul iz liste modula, proverom da li sadrzi ime glavnog executabla.
-		_, _, err := getExeName.Call(uintptr(p.handle), uintptr(modes[i]), uintptr(unsafe.Pointer(&fileName[0])), uintptr(len(fileName)));
+		_, _, success := getExeName.Call(uintptr(p.handle), uintptr(modes[i]), uintptr(unsafe.Pointer(&fileName[0])), uintptr(len(fileName)));
 		// U svakoj iteraciji loopa, fileName ce biti popunjen sa pathom modula kao UTF16.
 		file := syscall.UTF16ToString(fileName); // Path ka modulu kao string
-		if (err != nil) {
-			fmt.Println("e");
-		}
-		if (strings.Contains(file, "notepad.exe")) { // Proveravamo da li path ka modulu sadrzi ime glavnog executable (Ako je glavni modul)
-			getMod(windows.Handle(p.handle), windows.Handle(modes[i]), &moduleInfo)
-			fmt.Println(moduleInfo);
-			break;
+		if (success != nil) {
+			if (strings.Contains(file, "notepad.exe")) { // Proveravamo da li path ka modulu sadrzi ime glavnog executable (Ako je glavni modul)
+				GetModuleInfo(windows.Handle(p.handle), windows.Handle(modes[i]), &moduleInfo)
+				fmt.Println(moduleInfo);
+				break;
+			}
 		}
 	}
 	return moduleInfo.BaseOfDll;
@@ -147,12 +180,12 @@ func (p *Process) EnumerateModules(modules []syscall.Handle) ([]syscall.Handle, 
 }
 
 func main() {
-	success, process := OpenProcess(false, 15536, windows.PROCESS_QUERY_INFORMATION|windows.PROCESS_VM_READ|windows.PROCESS_VM_WRITE) // This is notepad
+	success, process := OpenProcess(false, 16660, windows.PROCESS_QUERY_INFORMATION|windows.PROCESS_VM_READ|windows.PROCESS_VM_WRITE|windows.PROCESS_VM_OPERATION) // This is notepad
 	if !success {
 		fmt.Println("Failed")
 		return
 	}
-	base := process.GetBaseAddress()
+	base := process.LoadLibrary("path\\to\\dll.dll");
+	
 	fmt.Printf("base: %v\n", base)
-
 }

@@ -1,11 +1,17 @@
-memory library written in Golang, a project I just started creating (preview), current for testing:
-- openProcess (opens process and returns handle)
-- dll injection via remote thread (injects a library into process by via VirtualAlloc & CreateRemoteThread
-- readMemory (reads memory into buffer)
-- writeMemory (writes memory from buffer)
-- enumerateModules (enumerates loaded modules into the process)
-- getMainExecutable (gets the main executable (entry) of the process)
-- Get base address of main module (Gets the base address uintptr of the main module)
-  todo:
-  - add memory page scanning for strings
-  - AOB (array of bytes) memory scan
+
+# MemGO
+
+MemGO is a memory-library written in Golang used to hook onto a process and manipulate it's memory safely. It's very early into the build and doesn't support many things.
+
+
+
+What does MemGO offer/will offer?
+-
+
+- Read Process Memory.
+- Write Process Memory.
+- Hook onto a Process.
+- Enumerate Process Modules.
+- DLL Injection via Remote Thread.
+- Get Main Executable of the Process.
+- Get BaseAddress of the Main Module.
